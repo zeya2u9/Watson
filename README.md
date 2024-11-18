@@ -3,7 +3,10 @@
 This repository contains the code implementation of paper titled "Every Sherlock Needs a Watson: Practical Semi-Realtime Attack Elaboration System" accepted in 18th International Conference on Network and System Security (NSS). Watson is a modular attack elaboration framework which works in semi-realtime on the output of any learning based NIDS.
 
 ## Watson Design Details
-![watson_ppt_images-watson](https://github.com/user-attachments/assets/cd75365b-e917-4d97-853c-911e48cb2fc8)
+<div align = "center">
+  <img src="https://github.com/user-attachments/assets/cd75365b-e917-4d97-853c-911e48cb2fc8" width="750" height="320">
+</div>
+
 
 ## Repository Structure
 For each attack module, there is a respective folder with its logic code and other necessary files.
