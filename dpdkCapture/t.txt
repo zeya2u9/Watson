@@ -1,0 +1,14 @@
+EAL: Probing VFIO support...
+EAL: VFIO support initialized
+EAL: PCI device 0000:81:00.0 on NUMA socket 1
+EAL:   probe driver: 8086:1583 net_i40e
+EAL: PCI device 0000:81:00.1 on NUMA socket 1
+EAL:   probe driver: 8086:1583 net_i40e
+rssHFMask: fbe
+dpdkRssHF: 3ef8
+devInfo.flow_type_rss_offloads: 7ef8
+rssHFMask: fbe
+dpdkRssHF: 3ef8
+devInfo.flow_type_rss_offloads: 7ef8
+
+Shutting down... with a count of 2077047and a speed of 38Mbits/sec
