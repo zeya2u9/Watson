@@ -1,0 +1,194 @@
+#include "PcapFileDevice.h"
+#include "Layer.h"
+#include "TcpLayer.h"
+#include "IPv4Layer.h"
+#include "SSHLayer.h"
+#include "Packet.h"
+#include <iostream>
+#include <sstream>
+#include <fstream>
+#include <stdlib.h>
+#include <string.h>
+#include <map>
+#include <tuple>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <time.h>
+#include <signal.h>
+
+#define ARR_SIZE 512
+
+struct data{
+      char buf[512];
+      int rawDataLen;
+      timespec timestamp;
+      pcpp::LinkLayerType layerType;
+};
+
+static data* msg_ptr;
+uint64_t counter = 0,counter_temp = 0;
+timespec c_time,f_time;
+short enable = 0;
+int sock;
+struct sockaddr_un addr;
+char socket_path[] = "/dev/shm/sshBruteForce\0";
+
+void *run(void *argp){
+    std::map<std::tuple<std::string,int,std::string>,std::tuple<time_t,char,unsigned long>> sshBFScore; // map of (src IP src port dest IP)as key, (timestamp and count of packets to it) as values
+    std::map<std::string,unsigned long> result; // map of attacker IP and number of connections
+    time_t current_time;
+    long long* limit = (long long *)argp;
+    while(1){
+	if(enable == 0){
+		enable = 1;
+		clock_gettime(CLOCK_REALTIME,&c_time);
+	}
+	int size = sizeof(addr);
+	int bytes_rec = recvfrom(sock, msg_ptr, sizeof(data), 0, (struct sockaddr *) &addr, (socklen_t *)&size);
+        if(bytes_rec < 0 ){
+	    std::cerr<<"error receiving bytes from socket with errno: "<<errno<<std::endl;
+	    close(sock);
+	    exit(-1);
+	}
+	else if (bytes_rec == 0 ){
+             continue;
+        }
+   	pcpp::RawPacket rawPacket((const uint8_t*)msg_ptr->buf,msg_ptr->rawDataLen,msg_ptr->timestamp,0,msg_ptr->layerType);
+	counter_temp++;
+	//while(reader->getNextPacket(rawPacket)){
+        pcpp::Packet parsedPacket(&rawPacket); // making parsed packet from raw packet to extract information layer by layer
+        //std::cout<<parsedPacket.toString()<<std::endl;
+	if (parsedPacket.isPacketOfType(pcpp::IPv4)) // if the packet is of IPv4
+        {
+	    if(parsedPacket.isPacketOfType(pcpp::TCP)){
+            if(parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort() != 22 && parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getDstPort() != 22){continue;} // continue if the packet is not of ssh
+	    else{
+		if(!(parsedPacket.isPacketOfType(pcpp::SSH))){continue;}
+		else{
+		current_time = rawPacket.getPacketTimeStamp().tv_sec;
+		if((parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getTcpHeader()->synFlag == 1) && (parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getTcpHeader()->ackFlag == 0)){ // if it is a syn tcp packet from outside to the target
+		    // if the flow entry doesnt exist in the map then create it along with value (timstamp,flag,count) defaulting to (timestamp,SYN,0)
+		    if(sshBFScore.find(std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())) == sshBFScore.end()){
+		    	sshBFScore[std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())] = std::make_tuple(current_time,'S',0);
+		    }
+		    // if it exists then for obvious reasons with the same port the earlier connection would have been closed hence set the flag to SYN again
+		    else{
+			std::get<1>(sshBFScore[std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())]) = 'S';
+		    }
+		}
+		if(parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getTcpHeader()->finFlag == 1){ // if it is a fin tcp packet from outside to the target
+		    counter++; // increment the counter
+		    // set the flag value to FIN in the map
+		    std::get<1>(sshBFScore[std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())]) = 'F';
+		    // check the timestamp, if its <= 12 then its definetly ssh bruteforce hence do count++ in the value
+		    if(current_time - std::get<0>(sshBFScore[std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())]) <= 12)
+		        std::get<2>(sshBFScore[std::make_tuple(parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getSrcIPv4Address().toString(),parsedPacket.getLayerOfType<pcpp::TcpLayer>()->getSrcPort(),parsedPacket.getLayerOfType<pcpp::IPv4Layer>()->getDstIPv4Address().toString())])++;
+		    // a loop to convert the map of flows to a map of IPs since we dont care about ports during identification
+		    for(auto x : sshBFScore){
+			if(current_time - std::get<0>(x.second) <=  12){
+			    if(result.find(std::get<0>(x.first)) == result.end()){ result[std::get<0>(x.first)] = 0; }
+			    else{ result[std::get<0>(x.first)]++; }
+			}
+		    }
+		}
+		}
+	    }
+	    }
+        }
+	//std::cout<<counter<<" "<<*limit<<std::endl;
+	if(counter >= (*limit)){
+	    std::cout<<"hit"<<std::endl;
+	    // displaying all attacaker IPs and total attempts
+            for(auto x : result){ 
+		std::cout<<"IP: "<<x.first<<" Count: "<<x.second<<std::endl;
+		x.second = 0;
+	    }
+	    counter = 0;
+	}
+    }
+}
+
+void handler(int sig){
+	clock_gettime(CLOCK_REALTIME,&f_time);
+	printf("\nShutting Down... with packets = %llu and processing time = %llu.%llu\n",counter_temp,f_time.tv_sec-c_time.tv_sec,f_time.tv_nsec-c_time.tv_nsec);
+	exit(0);
+}
+
+int main(int argc, char* argv[])
+{
+    signal(SIGINT,handler);
+    //if less arguments
+    if(argc<2){std::cerr<<"Usage: "<<argv[0]<<" BatchSize"<<std::endl; return -1;}
+    //checking if pcap file exists
+    /*std::ifstream f;
+    f.open(argv[1]);
+    if(!f){std::cerr<<"PcapFile doesnt Exist!!"<<std::endl; return -1;}
+    f.close();
+    // use the IFileReaderDevice interface to automatically identify file type (pcap/pcap-ng)
+    // and create an interface instance that both readers implement
+    pcpp::IFileReaderDevice* reader = pcpp::IFileReaderDevice::getReader(argv[1]);
+
+    // verify that a reader interface was indeed created
+    if (reader == NULL)
+    {
+        std::cerr << "Cannot determine reader for file type" << std::endl;
+        return -1;
+    }
+    // open the reader for reading
+    if (!reader->open())
+    {
+        std::cerr << "Cannot open "<<argv[1]<<" for reading" << std::endl;
+        return -1;
+    }*/
+    if(strlen(argv[1]) >= 19){
+	std::cerr<<"Too long number for Batch Size"<<std::endl;
+	std::cerr<<"18 digits Maximum"<<std::endl;
+	return -1;
+    }
+    char batch[18];
+    char *end;
+    strcpy(batch,argv[1]);
+    long long batchsize = atoll(argv[1]);
+
+    //make and bind to a socket
+    sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (sock == -1){
+        std::cerr<<"Error making socket with errno: "<<errno;
+        exit(-1);
+    }
+
+    addr.sun_family = AF_UNIX;
+    strcpy(addr.sun_path, socket_path);
+    int len = sizeof(addr);
+    int rc = bind(sock, (struct sockaddr *) &addr, len);
+    if (rc == -1){
+        std::cerr<<"Error binding to socket with errno: "<<errno;
+        close(sock);
+        exit(-1);
+    }
+
+    msg_ptr = new data;
+
+    pthread_t t1,t2,t3,t4,t5,t6,t7,t8;
+    pthread_create(&t1,NULL,run,&batchsize);
+    /*pthread_create(&t2,NULL,run,&batchsize);
+    pthread_create(&t3,NULL,run,&batchsize);
+    pthread_create(&t4,NULL,run,&batchsize);
+    pthread_create(&t5,NULL,run,&batchsize);
+    pthread_create(&t6,NULL,run,&batchsize);
+    pthread_create(&t7,NULL,run,&batchsize);
+    pthread_create(&t8,NULL,run,&batchsize);*/
+    pthread_join(t1,NULL);
+    /*pthread_join(t2,NULL);
+    pthread_join(t3,NULL);
+    pthread_join(t4,NULL);
+    pthread_join(t5,NULL);
+    pthread_join(t6,NULL);
+    pthread_join(t7,NULL);
+    pthread_join(t8,NULL);*/
+    return 0;
+}
